@@ -3,8 +3,10 @@ dotenv.config();
 
 import mongoose from 'mongoose';
 import { User } from '../models/User';
+import Employee from '../models/Employee';
 import { Settings } from '../models/Settings';
 import { Department, Designation, LeaveType } from '../models/Org';
+
 
 const seedAccounts = async () => {
   try {
@@ -84,11 +86,35 @@ const seedAccounts = async () => {
 
     console.log('[Seed] Provisioning test role accounts...');
     for (const acc of accounts) {
-      // Remove existing to ensure fresh password hash
+
       await User.deleteOne({ email: acc.email });
-      await User.create(acc);
+      const createdUser = await User.create({
+        ...acc,
+        isActive: true,
+      });
+
+      // Also ensure Employee profile exists and is active
+      const codeSuffix = acc.role.toUpperCase();
+      await Employee.deleteOne({ email: acc.email });
+      await Employee.create({
+        employeeId: `EMP-${codeSuffix}-01`,
+        userId: createdUser._id,
+        name: acc.name,
+        fatherName: 'Senior Official',
+        email: acc.email,
+        phone: '+92 300 1234567',
+        address: 'Karachi, Pakistan',
+        department: acc.role === 'admin' ? 'Operations' : acc.role === 'hr' ? 'Human Resources' : 'Engineering',
+        designation: acc.role === 'admin' ? 'Administrator' : acc.role === 'hr' ? 'HR Officer' : 'Senior Engineer',
+        role: acc.role,
+        dateOfJoining: '2026-01-01',
+        basicSalary: acc.role === 'employee' ? 100000 : 150000,
+        status: 'active',
+      });
+
       console.log(`[Seed] Created ${acc.role.toUpperCase()}: ${acc.email} / ${acc.password}`);
     }
+
 
     console.log('\n===============================================');
     console.log('SUCCESS! Credentials ready for testing:');

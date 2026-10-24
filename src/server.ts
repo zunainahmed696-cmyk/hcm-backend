@@ -25,12 +25,33 @@ const CLIENT_URL = process.env.CLIENT_URL || 'http://localhost:5173';
 // Middlewares
 app.use(
   cors({
-    origin: [CLIENT_URL, 'http://localhost:5173', 'http://127.0.0.1:5173'],
+    origin: (origin, callback) => {
+      if (!origin) return callback(null, true);
+      if (
+        origin === CLIENT_URL ||
+        origin.includes('localhost') ||
+        origin.includes('127.0.0.1') ||
+        origin.endsWith('.vercel.app')
+      ) {
+        return callback(null, true);
+      }
+      return callback(null, true);
+    },
     credentials: true,
   })
 );
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Ensure database connection for serverless executions
+app.use(async (_req: Request, _res: Response, next) => {
+  try {
+    await connectDB();
+  } catch (err) {
+    console.error('Database connection error in middleware:', err);
+  }
+  next();
+});
 
 // Health check endpoint
 app.get('/api/health', (_req: Request, res: Response) => {
@@ -66,7 +87,7 @@ app.use((req: Request, res: Response) => {
 app.use(errorHandler);
 
 
-// Start Server
+// Start Server (only bind port if not running in serverless environment)
 const startServer = async () => {
   try {
     await connectDB();
@@ -83,6 +104,10 @@ const startServer = async () => {
   }
 };
 
-startServer();
+if (process.env.VERCEL !== '1') {
+  startServer();
+} else {
+  connectDB().catch(console.error);
+}
 
 export default app;
