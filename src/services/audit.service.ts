@@ -10,10 +10,11 @@ interface AuditInput {
   after?: unknown;
 }
 
-/** Writes an audit entry. Never throws: auditing must not break the main action. */
+/** Writes an audit entry scoped to the actor's tenant. Never throws: auditing must not break the main action. */
 export const recordAudit = async ({ actor, action, entity, entityId, before, after }: AuditInput): Promise<void> => {
   try {
     await AuditLog.create({
+      tenantId: actor?.tenantId || null,
       actorId: actor?.userId ?? null,
       actorEmail: actor?.email ?? 'system',
       actorRole: actor?.role ?? 'system',

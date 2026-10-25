@@ -2,13 +2,18 @@ import mongoose, { Schema, Document } from 'mongoose';
 
 export type NotificationType = 'announcement' | 'notification';
 export type NotificationPriority = 'normal' | 'high' | 'urgent';
+export type AnnouncementScope = 'everyone' | 'department' | 'employee';
 
 export interface INotificationDocument extends Document {
+  tenantId?: mongoose.Types.ObjectId;
   type: NotificationType;
   title: string;
   message: string;
   category: 'system' | 'leave' | 'attendance' | 'payroll' | 'general';
   priority: NotificationPriority;
+  targetScope: AnnouncementScope;
+  targetDepartment?: string | null;
+  targetEmployeeId?: string | null;
   recipientUserId?: mongoose.Types.ObjectId; // null = company-wide announcement
   senderName: string;
   readBy: mongoose.Types.ObjectId[];
@@ -19,6 +24,11 @@ export interface INotificationDocument extends Document {
 
 const NotificationSchema = new Schema<INotificationDocument>(
   {
+    tenantId: {
+      type: Schema.Types.ObjectId,
+      ref: 'Settings',
+      index: true,
+    },
     type: {
       type: String,
       enum: ['announcement', 'notification'],
@@ -45,6 +55,22 @@ const NotificationSchema = new Schema<INotificationDocument>(
       type: String,
       enum: ['normal', 'high', 'urgent'],
       default: 'normal',
+    },
+    targetScope: {
+      type: String,
+      enum: ['everyone', 'department', 'employee'],
+      default: 'everyone',
+      index: true,
+    },
+    targetDepartment: {
+      type: String,
+      default: null,
+      trim: true,
+    },
+    targetEmployeeId: {
+      type: String,
+      default: null,
+      trim: true,
     },
     recipientUserId: {
       type: Schema.Types.ObjectId,
@@ -73,7 +99,7 @@ const NotificationSchema = new Schema<INotificationDocument>(
   }
 );
 
-NotificationSchema.index({ type: 1, createdAt: -1 });
+NotificationSchema.index({ tenantId: 1, type: 1, createdAt: -1 });
 
 export const Notification = mongoose.model<INotificationDocument>('Notification', NotificationSchema);
 export default Notification;

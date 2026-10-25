@@ -77,6 +77,7 @@ app.use('/api/attendance', attendanceRoutes);
 app.use('/api/leaves', leaveRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/profile', profileRoutes);
+app.use('/api/dashboard', profileRoutes);
 app.use('/api/payroll', payrollRoutes);
 app.use('/api/audit', auditRoutes);
 app.use('/api/ai', aiRoutes);

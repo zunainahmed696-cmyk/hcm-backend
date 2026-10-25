@@ -1,4 +1,4 @@
-import { Employee, IEmployeeDocument } from '../models/Employee';
+import { Employee } from '../models/Employee';
 import { User } from '../models/User';
 import { Department } from '../models/Org';
 import { AppError } from '../utils/AppError';
@@ -61,6 +61,8 @@ const validateEmployeeInput = (input: Partial<CreateEmployeeInput>): CreateEmplo
     throw new AppError('Password must be at least 6 characters.', 422);
   }
 
+  const sanitizedRole: 'hr' | 'employee' = input.role === 'hr' ? 'hr' : 'employee';
+
   return {
     employeeId,
     name,
@@ -70,7 +72,7 @@ const validateEmployeeInput = (input: Partial<CreateEmployeeInput>): CreateEmplo
     address: input.address?.trim() || '',
     department,
     designation,
-    role: input.role || 'employee',
+    role: sanitizedRole,
     dateOfJoining,
     basicSalary,
     status: input.status || 'active',
@@ -83,13 +85,16 @@ const validateEmployeeInput = (input: Partial<CreateEmployeeInput>): CreateEmplo
 export const createEmployee = async (input: Partial<CreateEmployeeInput>, actor: JWTPayload) => {
   const validated = validateEmployeeInput(input);
 
-  // Check unique employeeId
-  const existingCode = await Employee.findOne({ employeeId: validated.employeeId });
+  // Check unique employeeId within this tenant
+  const existingCode = await Employee.findOne({
+    tenantId: actor.tenantId,
+    employeeId: validated.employeeId,
+  });
   if (existingCode) {
-    throw new AppError(`Employee ID '${validated.employeeId}' is already assigned.`, 409);
+    throw new AppError(`Employee ID '${validated.employeeId}' is already assigned in your organization.`, 409);
   }
 
-  // Check unique email in Employee and User collections
+  // Check unique email in User collection
   const existingEmail = await User.findOne({ email: validated.email });
   if (existingEmail) {
     throw new AppError(`A user with email '${validated.email}' already exists.`, 409);
@@ -101,6 +106,7 @@ export const createEmployee = async (input: Partial<CreateEmployeeInput>, actor:
   const forceChange = validated.mustChangePassword !== undefined ? validated.mustChangePassword : !customPass;
 
   const user = await User.create({
+    tenantId: actor.tenantId,
     name: validated.name,
     email: validated.email,
     password: initialPassword,
@@ -109,8 +115,15 @@ export const createEmployee = async (input: Partial<CreateEmployeeInput>, actor:
     isActive: true,
   });
 
-  // Create Employee document linked to User
+  // Check if department has a default shift configured
+  const deptDoc = await Department.findOne({
+    tenantId: actor.tenantId,
+    name: validated.department,
+  }).lean();
+
+  // Create Employee document linked to User and Tenant
   const employee = await Employee.create({
+    tenantId: actor.tenantId,
     employeeId: validated.employeeId,
     userId: user._id,
     name: validated.name,
@@ -124,6 +137,10 @@ export const createEmployee = async (input: Partial<CreateEmployeeInput>, actor:
     dateOfJoining: validated.dateOfJoining,
     basicSalary: validated.basicSalary,
     status: validated.status,
+    shiftName: (deptDoc as any)?.shiftName || 'Morning Shift',
+    shiftStart: (deptDoc as any)?.shiftStart || '09:00',
+    shiftEnd: (deptDoc as any)?.shiftEnd || '17:00',
+    shiftGraceMinutes: (deptDoc as any)?.shiftGraceMinutes ?? 15,
   });
 
   await recordAudit({
@@ -240,13 +257,19 @@ export const processBulkCSV = async (
   const seenIds = new Set<string>();
   const seenEmails = new Set<string>();
 
-  // Fetch existing DB IDs and emails for collision detection
-  const existingEmployees = await Employee.find({}, 'employeeId email').lean();
+  // Fetch existing DB IDs (scoped to tenant) and emails for collision detection
+  const [existingEmployees, existingUsers] = await Promise.all([
+    Employee.find({ tenantId: actor.tenantId }, 'employeeId email').lean(),
+    User.find({}, 'email').lean(),
+  ]);
   const dbIds = new Set(existingEmployees.map((e) => e.employeeId));
-  const dbEmails = new Set(existingEmployees.map((e) => e.email.toLowerCase()));
+  const dbEmails = new Set([
+    ...existingEmployees.map((e) => e.email.toLowerCase()),
+    ...existingUsers.map((u) => u.email.toLowerCase()),
+  ]);
 
-  // Fetch valid departments if any are registered
-  const registeredDepts = await Department.find({}, 'name').lean();
+  // Fetch valid departments if any are registered for this tenant
+  const registeredDepts = await Department.find({ tenantId: actor.tenantId }, 'name').lean();
   const validDeptNames = new Set(registeredDepts.map((d) => d.name.toLowerCase()));
 
   rows.forEach((row, idx) => {
@@ -314,6 +337,10 @@ export const processBulkCSV = async (
       errors.push({ row: rowNum, field: 'password', reason: 'Password must be at least 6 characters' });
     }
 
+    const rowRoleRaw = String(row.role || '').trim().toLowerCase();
+    const resolvedRole: 'hr' | 'employee' =
+      rowRoleRaw === 'hr' || department.toLowerCase() === 'human resources' ? 'hr' : 'employee';
+
     // If this row has no errors, prepare it for insertion
     const rowErrors = errors.filter((e) => e.row === rowNum);
     if (rowErrors.length === 0) {
@@ -326,7 +353,7 @@ export const processBulkCSV = async (
         address,
         department,
         designation,
-        role: 'employee',
+        role: resolvedRole,
         dateOfJoining,
         basicSalary,
         status: 'active',
@@ -364,15 +391,17 @@ export const processBulkCSV = async (
     const forceChange = !customPass;
 
     const user = await User.create({
+      tenantId: actor.tenantId,
       name: item.name,
       email: item.email,
       password: finalPass,
-      role: 'employee',
+      role: item.role || 'employee',
       mustChangePassword: forceChange,
       isActive: true,
     });
 
     const employee = await Employee.create({
+      tenantId: actor.tenantId,
       employeeId: item.employeeId,
       userId: user._id,
       name: item.name,
@@ -429,20 +458,26 @@ export const enrichEmployee = (emp: any) => {
   };
 };
 
-/** List employees with server-side search, filters & pagination (brief #07) */
-export const listEmployees = async (query: {
-  search?: string;
-  department?: string;
-  designation?: string;
-  status?: string;
-  page?: string;
-  limit?: string;
-}) => {
+/** List employees with server-side search, filters & pagination scoped to tenant (brief #07) */
+export const listEmployees = async (
+  query: {
+    search?: string;
+    department?: string;
+    designation?: string;
+    status?: string;
+    page?: string;
+    limit?: string;
+  },
+  actor: JWTPayload
+) => {
   const page = Math.max(1, parseInt(query.page || '1', 10));
   const limit = Math.min(100, Math.max(1, parseInt(query.limit || '20', 10)));
   const skip = (page - 1) * limit;
 
-  const filter: Record<string, any> = {};
+  const filter: Record<string, any> = {
+    tenantId: actor.tenantId,
+    role: { $ne: 'admin' },
+  };
 
   if (query.department) filter.department = query.department;
   if (query.designation) filter.designation = query.designation;
@@ -477,9 +512,9 @@ export const listEmployees = async (query: {
   };
 };
 
-/** Get Employee 360 profile */
+/** Get Employee 360 profile scoped to tenant */
 export const getEmployeeById = async (id: string, actor: JWTPayload) => {
-  const employee = await Employee.findById(id).lean();
+  const employee = await Employee.findOne({ _id: id, tenantId: actor.tenantId }).lean();
   if (!employee) throw new AppError('Employee not found.', 404);
 
   // Scoping check: an employee can only view their own profile
@@ -490,13 +525,13 @@ export const getEmployeeById = async (id: string, actor: JWTPayload) => {
   return enrichEmployee(employee);
 };
 
-/** Update employee record */
+/** Update employee record scoped to tenant */
 export const updateEmployee = async (
   id: string,
   updateData: Partial<CreateEmployeeInput>,
   actor: JWTPayload
 ) => {
-  const employee = await Employee.findById(id);
+  const employee = await Employee.findOne({ _id: id, tenantId: actor.tenantId });
   if (!employee) throw new AppError('Employee not found.', 404);
 
   const before = employee.toObject();
@@ -518,8 +553,9 @@ export const updateEmployee = async (
     if (updateData.designation) employee.designation = updateData.designation.trim();
     if (updateData.status) employee.status = updateData.status;
     if (updateData.role && (actor.role === 'admin' || actor.role === 'hr')) {
-      employee.role = updateData.role;
-      await User.findByIdAndUpdate(employee.userId, { role: updateData.role });
+      const targetRole: 'hr' | 'employee' = updateData.role === 'hr' ? 'hr' : 'employee';
+      employee.role = targetRole;
+      await User.findByIdAndUpdate(employee.userId, { role: targetRole });
     }
     if (updateData.basicSalary && Number(updateData.basicSalary) > 0) {
       employee.basicSalary = Number(updateData.basicSalary);
@@ -540,9 +576,14 @@ export const updateEmployee = async (
   return enrichEmployee(employee.toObject());
 };
 
-/** Export all employees as CSV string (brief #08) */
-export const exportEmployeesCSV = async () => {
-  const employees = await Employee.find().sort({ employeeId: 1 }).lean({ virtuals: true });
+/** Export all employees for the tenant as CSV string (brief #08) */
+export const exportEmployeesCSV = async (actor: JWTPayload) => {
+  const employees = await Employee.find({
+    tenantId: actor.tenantId,
+    role: { $ne: 'admin' },
+  })
+    .sort({ employeeId: 1 })
+    .lean({ virtuals: true });
 
   const headers = [
     'employeeId',
@@ -588,7 +629,7 @@ export const exportEmployeesCSV = async () => {
   return [headers.join(','), ...rows].join('\n');
 };
 
-/** Reset employee password (admin / hr) */
+/** Reset employee password (admin / hr) scoped to tenant */
 export const resetEmployeePassword = async (
   employeeIdOrDocId: string,
   newPassword?: string,
@@ -596,13 +637,17 @@ export const resetEmployeePassword = async (
   actor?: JWTPayload
 ) => {
   const isMongoId = /^[0-9a-fA-F]{24}$/.test(employeeIdOrDocId);
-  const employee = await Employee.findOne({
+  const filter: Record<string, any> = {
     $or: [
       { employeeId: employeeIdOrDocId.toUpperCase() },
       ...(isMongoId ? [{ _id: employeeIdOrDocId }] : []),
     ],
-  });
+  };
+  if (actor?.tenantId) {
+    filter.tenantId = actor.tenantId;
+  }
 
+  const employee = await Employee.findOne(filter);
   if (!employee) throw new AppError('Employee not found.', 404);
 
   const user = await User.findById(employee.userId);

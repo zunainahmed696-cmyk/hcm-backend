@@ -55,7 +55,9 @@ export const getMe = async (req: AuthRequest, res: Response, next: NextFunction)
   try {
     const user = await User.findById(req.user!.userId);
     if (!user) throw new AppError('User not found.', 404);
-    const settings = await Settings.findOne().lean();
+    const settings = user.tenantId
+      ? await Settings.findById(user.tenantId).lean()
+      : await Settings.findOne().lean();
     res.json({ success: true, user: toPublicUser(user), companyName: settings?.companyName ?? null });
   } catch (error) {
     next(error);

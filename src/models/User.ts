@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs';
 import { UserRole, ROLES } from '../types';
 
 export interface IUserDocument extends Document {
+  tenantId?: mongoose.Types.ObjectId;
   name: string;
   email: string;
   password?: string;
@@ -16,6 +17,11 @@ export interface IUserDocument extends Document {
 
 const UserSchema = new Schema<IUserDocument>(
   {
+    tenantId: {
+      type: Schema.Types.ObjectId,
+      ref: 'Settings',
+      index: true,
+    },
     name: {
       type: String,
       required: [true, 'Please provide a name'],

@@ -1,6 +1,7 @@
 import mongoose, { Schema, Document } from 'mongoose';
 
 export interface IPayslipDocument extends Document {
+  tenantId: mongoose.Types.ObjectId;
   employeeId: string;
   userId: mongoose.Types.ObjectId;
   month: string; // YYYY-MM
@@ -24,6 +25,12 @@ export interface IPayslipDocument extends Document {
 
 const PayslipSchema = new Schema<IPayslipDocument>(
   {
+    tenantId: {
+      type: Schema.Types.ObjectId,
+      ref: 'Settings',
+      required: true,
+      index: true,
+    },
     employeeId: {
       type: String,
       required: true,
@@ -69,7 +76,7 @@ const PayslipSchema = new Schema<IPayslipDocument>(
   }
 );
 
-PayslipSchema.index({ employeeId: 1, month: 1 }, { unique: true });
+PayslipSchema.index({ tenantId: 1, employeeId: 1, month: 1 }, { unique: true });
 
 export const Payslip = mongoose.model<IPayslipDocument>('Payslip', PayslipSchema);
 export default Payslip;

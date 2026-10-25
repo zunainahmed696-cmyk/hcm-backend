@@ -2,21 +2,18 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 import mongoose from 'mongoose';
+import { connectDB } from '../config/db';
 import { User } from '../models/User';
 import Employee from '../models/Employee';
 import { Settings } from '../models/Settings';
 import { Department, Designation, LeaveType } from '../models/Org';
 
-
 const seedAccounts = async () => {
   try {
-    const mongoUri = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/hackathon_db';
-    console.log('[Seed] Connecting to MongoDB at:', mongoUri);
-    await mongoose.connect(mongoUri);
-    console.log('[Seed] MongoDB Connected.');
+    await connectDB();
 
     // 1. Ensure Company Settings exist
-    let settings = await Settings.findOne();
+    let settings = await Settings.findOne({ companyName: 'Acme Corporation' }) || await Settings.findOne();
     if (!settings) {
       settings = await Settings.create({
         companyName: 'Acme Corporation',
@@ -35,15 +32,17 @@ const seedAccounts = async () => {
       console.log('[Seed] Company settings already exist:', settings.companyName);
     }
 
+    const tenantId = settings._id;
+
     // 2. Ensure basic departments & designations exist for testing
     const depts = ['Engineering', 'Human Resources', 'Operations', 'Finance'];
     for (const d of depts) {
-      await Department.findOneAndUpdate({ name: d }, { name: d }, { upsert: true });
+      await Department.findOneAndUpdate({ tenantId, name: d }, { tenantId, name: d }, { upsert: true });
     }
 
     const designations = ['Senior Engineer', 'HR Officer', 'Operations Lead', 'Financial Analyst'];
     for (const des of designations) {
-      await Designation.findOneAndUpdate({ name: des }, { name: des }, { upsert: true });
+      await Designation.findOneAndUpdate({ tenantId, name: des }, { tenantId, name: des }, { upsert: true });
     }
 
     const leaveTypes = [
@@ -53,7 +52,7 @@ const seedAccounts = async () => {
       { name: 'Unpaid', annualQuota: 0, unlimited: true, isPaid: false },
     ];
     for (const lt of leaveTypes) {
-      await LeaveType.findOneAndUpdate({ name: lt.name }, lt, { upsert: true });
+      await LeaveType.findOneAndUpdate({ tenantId, name: lt.name }, { tenantId, ...lt }, { upsert: true });
     }
 
     // 3. Define the three test credentials
@@ -86,10 +85,10 @@ const seedAccounts = async () => {
 
     console.log('[Seed] Provisioning test role accounts...');
     for (const acc of accounts) {
-
       await User.deleteOne({ email: acc.email });
       const createdUser = await User.create({
         ...acc,
+        tenantId,
         isActive: true,
       });
 
@@ -97,6 +96,7 @@ const seedAccounts = async () => {
       const codeSuffix = acc.role.toUpperCase();
       await Employee.deleteOne({ email: acc.email });
       await Employee.create({
+        tenantId,
         employeeId: `EMP-${codeSuffix}-01`,
         userId: createdUser._id,
         name: acc.name,
@@ -114,7 +114,6 @@ const seedAccounts = async () => {
 
       console.log(`[Seed] Created ${acc.role.toUpperCase()}: ${acc.email} / ${acc.password}`);
     }
-
 
     console.log('\n===============================================');
     console.log('SUCCESS! Credentials ready for testing:');

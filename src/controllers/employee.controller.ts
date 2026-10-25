@@ -18,7 +18,7 @@ const wrap = (fn: Handler) => async (req: AuthRequest, res: Response, next: Next
 
 /** List employees with search, department/status filter and pagination */
 export const listEmployees = wrap(async (req) => {
-  const result = await empService.listEmployees(req.query as any);
+  const result = await empService.listEmployees(req.query as any, req.user!);
   return { body: result };
 });
 
@@ -64,10 +64,10 @@ export const resetPassword = wrap(async (req) => {
   return { body: result };
 });
 
-/** Export all employee records as downloadable CSV */
-export const exportCSV = async (_req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
+/** Export all employee records for the tenant as downloadable CSV */
+export const exportCSV = async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
   try {
-    const csv = await empService.exportEmployeesCSV();
+    const csv = await empService.exportEmployeesCSV(req.user!);
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', 'attachment; filename="employees.csv"');
     res.send(csv);

@@ -1,4 +1,4 @@
-import Leave, { ILeaveDocument, LeaveType } from '../models/Leave';
+import Leave, { LeaveType } from '../models/Leave';
 import { LeaveType as LeaveTypeModel, Holiday } from '../models/Org';
 import { Settings } from '../models/Settings';
 import { User } from '../models/User';
@@ -9,17 +9,21 @@ import { recordAudit } from './audit.service';
 import { AppError } from '../utils/AppError';
 import { JWTPayload } from '../types';
 
-/** Calculate working days strictly skipping weekend days and registered public holidays (Brief #14) */
+/** Calculate working days strictly skipping weekend days and registered public holidays for the tenant (Brief #14) */
 export const calculateWorkingDays = async (
   startDateStr: string,
-  endDateStr: string
+  endDateStr: string,
+  tenantId?: string
 ): Promise<{ workingDays: number; holidaysEncountered: string[]; weekendsEncountered: number }> => {
-  const settings = await Settings.findOne();
+  const settings = tenantId ? await Settings.findById(tenantId) : await Settings.findOne();
   const weekendDays = new Set(settings?.weekend || [0, 6]);
 
-  const holidays = await Holiday.find({
+  const holidayFilter: Record<string, any> = {
     date: { $gte: startDateStr, $lte: endDateStr },
-  });
+  };
+  if (tenantId) holidayFilter.tenantId = tenantId;
+
+  const holidays = await Holiday.find(holidayFilter);
   const holidayDateSet = new Set(holidays.map((h) => h.date));
 
   const start = new Date(startDateStr);
@@ -48,12 +52,13 @@ export const calculateWorkingDays = async (
   return { workingDays, holidaysEncountered, weekendsEncountered };
 };
 
-/** Get remaining leave quota balances for an employee */
-export const getLeaveBalances = async (employeeId: string) => {
+/** Get remaining leave quota balances for an employee within their tenant */
+export const getLeaveBalances = async (employeeId: string, tenantId?: string) => {
   const yearPrefix = new Date().getFullYear().toString();
 
   // Load configured leave types (Annual: 14, Sick: 8, Casual: 10, Unpaid)
-  const configuredTypes = await LeaveTypeModel.find();
+  const typeFilter: Record<string, any> = tenantId ? { tenantId } : {};
+  const configuredTypes = await LeaveTypeModel.find(typeFilter);
   const quotas: Record<string, { quota: number; unlimited: boolean; isPaid: boolean }> = {
     Annual: { quota: 14, unlimited: false, isPaid: true },
     Sick: { quota: 8, unlimited: false, isPaid: true },
@@ -70,11 +75,14 @@ export const getLeaveBalances = async (employeeId: string) => {
   });
 
   // Aggregate used and pending leaves this year
-  const activeLeaves = await Leave.find({
+  const leaveFilter: Record<string, any> = {
     employeeId,
     startDate: { $regex: `^${yearPrefix}` },
     status: { $in: ['approved', 'pending'] },
-  });
+  };
+  if (tenantId) leaveFilter.tenantId = tenantId;
+
+  const activeLeaves = await Leave.find(leaveFilter);
 
   const usedMap: Record<string, number> = {};
   const pendingMap: Record<string, number> = {};
@@ -130,7 +138,8 @@ export const applyLeave = async (
   // 1. Calculate working days
   const { workingDays, holidaysEncountered, weekendsEncountered } = await calculateWorkingDays(
     input.startDate,
-    input.endDate
+    input.endDate,
+    actor.tenantId
   );
 
   if (workingDays <= 0) {
@@ -142,6 +151,7 @@ export const applyLeave = async (
 
   // 2. Overlap check (Brief #14 -> 422 Unprocessable Entity)
   const overlapping = await Leave.findOne({
+    tenantId: actor.tenantId,
     employeeId: employee.employeeId,
     status: { $in: ['pending', 'approved'] },
     startDate: { $lte: input.endDate },
@@ -156,7 +166,7 @@ export const applyLeave = async (
   }
 
   // 3. Quota check (Brief #14 -> 422 with available balance)
-  const balances = await getLeaveBalances(employee.employeeId);
+  const balances = await getLeaveBalances(employee.employeeId, actor.tenantId);
   const targetBal = balances.find((b) => b.type === input.leaveType);
   if (targetBal && !targetBal.unlimited) {
     if (targetBal.numericRemaining < workingDays) {
@@ -169,6 +179,7 @@ export const applyLeave = async (
 
   // 4. Create Leave record
   const leave = await Leave.create({
+    tenantId: actor.tenantId,
     employeeId: employee.employeeId,
     userId: actor.userId,
     leaveType: input.leaveType,
@@ -194,12 +205,17 @@ export const applyLeave = async (
     },
   });
 
-  // Notify Owner (Admin) and HR officers of new leave request
+  // Notify Owner (Admin) and HR officers in the same tenant of new leave request
   try {
-    const supervisors = await User.find({ role: { $in: ['admin', 'hr'] }, isActive: true });
+    const supervisors = await User.find({
+      tenantId: actor.tenantId,
+      role: { $in: ['admin', 'hr'] },
+      isActive: true,
+    });
     await Promise.all(
       supervisors.map((s) =>
         Notification.create({
+          tenantId: actor.tenantId,
           type: 'notification',
           title: `New Leave Request: ${employee.name}`,
           message: `${employee.name} (${employee.employeeId}, ${employee.department}) requested ${workingDays} working day(s) of ${input.leaveType} leave from ${input.startDate} to ${input.endDate}. Reason: "${input.reason.trim()}".`,
@@ -225,11 +241,16 @@ export const applyLeave = async (
   };
 };
 
-/** List all pending leave requests across the company for HR / Admin review */
-export const listPendingLeaves = async () => {
-  const pending = await Leave.find({ status: 'pending' }).sort({ createdAt: -1 }).lean();
+/** List all pending leave requests across the tenant for HR / Admin review */
+export const listPendingLeaves = async (actor: JWTPayload) => {
+  const pending = await Leave.find({ tenantId: actor.tenantId, status: 'pending' })
+    .sort({ createdAt: -1 })
+    .lean();
   const employeeIds = [...new Set(pending.map((p) => p.employeeId))];
-  const employees = await Employee.find({ employeeId: { $in: employeeIds } }).lean();
+  const employees = await Employee.find({
+    tenantId: actor.tenantId,
+    employeeId: { $in: employeeIds },
+  }).lean();
   const empMap = new Map(employees.map((e) => [e.employeeId, e]));
 
   return pending.map((p) => {
@@ -243,11 +264,14 @@ export const listPendingLeaves = async () => {
   });
 };
 
-/** List all company leave requests for HR / Admin */
-export const listAllLeaves = async () => {
-  const leaves = await Leave.find().sort({ createdAt: -1 }).lean();
+/** List all tenant leave requests for HR / Admin */
+export const listAllLeaves = async (actor: JWTPayload) => {
+  const leaves = await Leave.find({ tenantId: actor.tenantId }).sort({ createdAt: -1 }).lean();
   const employeeIds = [...new Set(leaves.map((l) => l.employeeId))];
-  const employees = await Employee.find({ employeeId: { $in: employeeIds } }).lean();
+  const employees = await Employee.find({
+    tenantId: actor.tenantId,
+    employeeId: { $in: employeeIds },
+  }).lean();
   const empMap = new Map(employees.map((e) => [e.employeeId, e]));
 
   return leaves.map((l) => {
@@ -272,7 +296,7 @@ export const updateLeaveStatus = async (
     throw new AppError('Only HR officers and Administrators can review leave requests.', 403);
   }
 
-  const leave = await Leave.findById(leaveId);
+  const leave = await Leave.findOne({ _id: leaveId, tenantId: actor.tenantId });
   if (!leave) throw new AppError('Leave request not found.', 404);
   if (leave.status !== 'pending') {
     throw new AppError(`Cannot review a leave that is already ${leave.status}.`, 400);
@@ -302,6 +326,7 @@ export const updateLeaveStatus = async (
     const reviewer = await User.findById(actor.userId);
     const reviewerName = reviewer?.name || actor.email;
     await Notification.create({
+      tenantId: actor.tenantId,
       type: 'notification',
       title: `Leave Request ${status === 'approved' ? 'Approved ✓' : 'Rejected ✗'}`,
       message: `Your ${leave.leaveType} leave request (${leave.startDate} to ${leave.endDate}, ${leave.daysCount} working days) has been ${status} by ${reviewerName}.${notes ? ` Decision note: "${notes.trim()}".` : ''}`,
@@ -321,7 +346,7 @@ export const updateLeaveStatus = async (
 /** Cancel a pending leave request */
 export const cancelLeave = async (actor: JWTPayload, leaveId: string) => {
   const employee = await getActorEmployee(actor);
-  const leave = await Leave.findById(leaveId);
+  const leave = await Leave.findOne({ _id: leaveId, tenantId: actor.tenantId });
 
   if (!leave) throw new AppError('Leave request not found.', 404);
   if (leave.employeeId !== employee.employeeId && actor.role === 'employee') {
@@ -347,10 +372,15 @@ export const cancelLeave = async (actor: JWTPayload, leaveId: string) => {
 
 /** List all leaves for the logged in employee */
 export const getMyLeaves = async (actor: JWTPayload) => {
+  // Owners (role: 'admin') do not have personal employee leave accounts
+  if (actor.role === 'admin') {
+    return { leaves: [], balances: [] };
+  }
+
   const employee = await getActorEmployee(actor);
   const [leaves, balances] = await Promise.all([
-    Leave.find({ employeeId: employee.employeeId }).sort({ createdAt: -1 }),
-    getLeaveBalances(employee.employeeId),
+    Leave.find({ tenantId: actor.tenantId, employeeId: employee.employeeId }).sort({ createdAt: -1 }),
+    getLeaveBalances(employee.employeeId, actor.tenantId),
   ]);
 
   return { leaves, balances };

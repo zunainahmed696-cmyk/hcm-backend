@@ -21,6 +21,26 @@ export const getMyInbox = wrap(async (req) => {
   return { body: result };
 });
 
+export const createAnnouncement = wrap(async (req) => {
+  const announcement = await notifService.createAnnouncement(req.user!, req.body);
+  return {
+    status: 201,
+    body: {
+      announcement,
+      message: 'Announcement published successfully.',
+    },
+  };
+});
+
+export const deleteAnnouncement = wrap(async (req) => {
+  await notifService.deleteAnnouncement(req.user!, req.params.id);
+  return {
+    body: {
+      message: 'Announcement deleted successfully.',
+    },
+  };
+});
+
 export const markAsRead = wrap(async (req) => {
   const item = await notifService.markAsRead(req.user!, req.params.id);
   return { body: { item } };

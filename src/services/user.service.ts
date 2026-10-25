@@ -13,8 +13,9 @@ export const generateTempPassword = (): string => {
   return Array.from(crypto.randomBytes(10), (b) => alphabet[b % alphabet.length]).join('');
 };
 
-export const listUsers = async (role?: string) => {
-  const filter = role ? { role } : {};
+export const listUsers = async (actor: JWTPayload, role?: string) => {
+  const filter: Record<string, any> = { tenantId: actor.tenantId };
+  if (role) filter.role = role;
   const users = await User.find(filter).sort({ createdAt: -1 });
   return users.map(toPublicUser);
 };
@@ -28,13 +29,20 @@ export const createHrUser = async (body: { name?: unknown; email?: unknown }, ac
   if (await User.exists({ email })) throw new AppError('A user with this email already exists.', 409);
 
   const tempPassword = generateTempPassword();
-  const user = await User.create({ name, email, password: tempPassword, role: 'hr', mustChangePassword: true });
+  const user = await User.create({
+    tenantId: actor.tenantId,
+    name,
+    email,
+    password: tempPassword,
+    role: 'hr',
+    mustChangePassword: true,
+  });
   await recordAudit({ actor, action: 'CREATE', entity: 'User', entityId: user._id.toString(), after: { name, email, role: 'hr' } });
   return { user: toPublicUser(user), tempPassword };
 };
 
 const getManageableUser = async (id: string, actor: JWTPayload) => {
-  const user = await User.findById(id);
+  const user = await User.findOne({ _id: id, tenantId: actor.tenantId });
   if (!user) throw new AppError('User not found.', 404);
   if (user.role === 'admin') throw new AppError('Admin accounts cannot be changed here.', 403);
   if (user._id.toString() === actor.userId) throw new AppError('You cannot change your own account.', 403);

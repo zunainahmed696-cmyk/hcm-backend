@@ -1,6 +1,7 @@
 import jwt from 'jsonwebtoken';
 import { User, IUserDocument } from '../models/User';
 import { Settings } from '../models/Settings';
+import { Department, Designation, LeaveType } from '../models/Org';
 import { AppError } from '../utils/AppError';
 import { JWTPayload } from '../types';
 import { recordAudit } from './audit.service';
@@ -11,12 +12,18 @@ export const getJwtSecret = (): string =>
   process.env.JWT_SECRET || 'super_secret_hackathon_jwt_key_2026_change_in_production';
 
 export const signToken = (user: IUserDocument): string => {
-  const payload: JWTPayload = { userId: user._id.toString(), email: user.email, role: user.role };
+  const payload: JWTPayload = {
+    userId: user._id.toString(),
+    tenantId: user.tenantId?.toString() || '',
+    email: user.email,
+    role: user.role,
+  };
   return jwt.sign(payload, getJwtSecret(), { expiresIn: '7d' });
 };
 
 export const toPublicUser = (user: IUserDocument) => ({
   id: user._id,
+  tenantId: user.tenantId?.toString() || '',
   name: user.name,
   email: user.email,
   role: user.role,
@@ -32,8 +39,6 @@ const assertPassword = (password: unknown): string => {
   return password;
 };
 
-import { Department, Designation, LeaveType } from '../models/Org';
-
 export const isSetupComplete = async (): Promise<boolean> => (await Settings.countDocuments()) > 0;
 
 export interface SetupInput {
@@ -43,8 +48,9 @@ export interface SetupInput {
   halfDayHours?: number;
   weekend?: number[];
   office?: {
-    lat?: number;
-    lng?: number;
+    address?: string;
+    lat?: number | null;
+    lng?: number | null;
     radiusMeters?: number;
   };
   adminName?: string;
@@ -52,45 +58,15 @@ export interface SetupInput {
   password?: string;
 }
 
-/** First-run setup (functionality #01): creates company profile, rules, and Master Admin. Only works once. */
-export const runFirstSetup = async (input: SetupInput) => {
-  if (await isSetupComplete()) throw new AppError('Setup has already been completed.', 409);
-
-  const companyName = input.companyName?.trim();
-  const adminName = input.adminName?.trim() || 'Admin';
-  const email = input.email?.trim().toLowerCase();
-  if (!companyName) throw new AppError('Company name is required.', 422);
-  if (!email || !EMAIL_RE.test(email)) throw new AppError('A valid admin email is required.', 422);
-  const password = assertPassword(input.password);
-
-  // 1. Create company settings with office hours, grace, weekend, and geofence
-  const settings = await Settings.create({
-    companyName,
-    officeStart: input.officeStart?.trim() || '09:00',
-    graceMinutes: input.graceMinutes !== undefined ? Number(input.graceMinutes) : 15,
-    halfDayHours: input.halfDayHours !== undefined ? Number(input.halfDayHours) : 5,
-    weekend: Array.isArray(input.weekend) && input.weekend.length > 0 ? input.weekend : [0, 6],
-    office: {
-      lat: input.office?.lat !== undefined && input.office?.lat !== null ? Number(input.office.lat) : 24.8607,
-      lng: input.office?.lng !== undefined && input.office?.lng !== null ? Number(input.office.lng) : 67.0011,
-      radiusMeters: input.office?.radiusMeters !== undefined ? Number(input.office.radiusMeters) : 150,
-    },
-  });
-
-  // 2. Create Master Administrator account
-  const admin = await User.create({
-    name: adminName,
-    email,
-    password,
-    role: 'admin',
-    isActive: true,
-    mustChangePassword: false,
-  });
-
-  // 3. Provision standard starter departments, designations, and leave types
+/** Seeds starter departments, designations, and leave types for a tenant */
+export const seedTenantCatalogs = async (tenantId: any) => {
   const starterDepts = ['Engineering', 'Human Resources', 'Operations', 'Finance'];
   for (const d of starterDepts) {
-    await Department.findOneAndUpdate({ name: d }, { name: d }, { upsert: true });
+    await Department.findOneAndUpdate(
+      { tenantId, name: d },
+      { tenantId, name: d },
+      { upsert: true }
+    );
   }
 
   const starterDesigs = [
@@ -100,7 +76,11 @@ export const runFirstSetup = async (input: SetupInput) => {
     { name: 'Financial Analyst' },
   ];
   for (const des of starterDesigs) {
-    await Designation.findOneAndUpdate({ name: des.name }, des, { upsert: true });
+    await Designation.findOneAndUpdate(
+      { tenantId, name: des.name },
+      { tenantId, ...des },
+      { upsert: true }
+    );
   }
 
   const starterLeaves = [
@@ -110,14 +90,70 @@ export const runFirstSetup = async (input: SetupInput) => {
     { name: 'Unpaid', annualQuota: 0, unlimited: true, isPaid: false },
   ];
   for (const lt of starterLeaves) {
-    await LeaveType.findOneAndUpdate({ name: lt.name }, lt, { upsert: true });
+    await LeaveType.findOneAndUpdate(
+      { tenantId, name: lt.name },
+      { tenantId, ...lt },
+      { upsert: true }
+    );
+  }
+};
+
+/** Company setup (functionality #01): creates a new isolated Tenant (Settings) + Master Admin + starter catalogs. */
+export const runFirstSetup = async (input: SetupInput) => {
+  const companyName = input.companyName?.trim();
+  const adminName = input.adminName?.trim() || 'Admin';
+  const email = input.email?.trim().toLowerCase();
+  if (!companyName) throw new AppError('Company name is required.', 422);
+  if (!email || !EMAIL_RE.test(email)) throw new AppError('A valid admin email is required.', 422);
+  const password = assertPassword(input.password);
+
+  const existingUser = await User.findOne({ email });
+  if (existingUser) {
+    throw new AppError('An account with this email address already exists. Please sign in instead.', 409);
   }
 
+  const hasCoords =
+    input.office?.lat !== undefined &&
+    input.office?.lat !== null &&
+    input.office?.lng !== undefined &&
+    input.office?.lng !== null;
+
+  // 1. Create a new tenant Settings document for this company
+  const settings = await Settings.create({
+    companyName,
+    officeStart: input.officeStart?.trim() || '09:00',
+    graceMinutes: input.graceMinutes !== undefined ? Number(input.graceMinutes) : 15,
+    halfDayHours: input.halfDayHours !== undefined ? Number(input.halfDayHours) : 5,
+    weekend: Array.isArray(input.weekend) && input.weekend.length > 0 ? input.weekend : [0, 6],
+    office: {
+      address: typeof input.office?.address === 'string' ? input.office.address.trim() : (hasCoords ? 'Karachi, Pakistan' : ''),
+      lat: hasCoords ? Number(input.office!.lat) : null,
+      lng: hasCoords ? Number(input.office!.lng) : null,
+      radiusMeters: input.office?.radiusMeters !== undefined ? Number(input.office.radiusMeters) : 150,
+    },
+  });
+
+  const tenantId = settings._id;
+
+  // 2. Create Master Administrator account bound to this tenant
+  const admin = await User.create({
+    tenantId,
+    name: adminName,
+    email,
+    password,
+    role: 'admin',
+    isActive: true,
+    mustChangePassword: false,
+  });
+
+  // 3. Provision standard starter departments, designations, and leave types for this tenant
+  await seedTenantCatalogs(tenantId);
+
   await recordAudit({
-    actor: { userId: admin._id.toString(), email: admin.email, role: 'admin' },
+    actor: { userId: admin._id.toString(), tenantId: tenantId.toString(), email: admin.email, role: 'admin' },
     action: 'SETUP',
     entity: 'Company',
-    after: { companyName, adminEmail: email, officeStart: settings.officeStart },
+    after: { companyName, adminEmail: email, officeStart: settings.officeStart, office: settings.office },
   });
 
   return admin;
@@ -146,7 +182,7 @@ export const changeUserPassword = async (userId: string, currentPassword: unknow
   user.mustChangePassword = false;
   await user.save();
   await recordAudit({
-    actor: { userId, email: user.email, role: user.role },
+    actor: { userId, tenantId: user.tenantId?.toString() || '', email: user.email, role: user.role },
     action: 'CHANGE_PASSWORD',
     entity: 'User',
     entityId: userId,

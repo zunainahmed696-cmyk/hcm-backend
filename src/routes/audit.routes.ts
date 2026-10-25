@@ -11,7 +11,7 @@ router.use(authorizeRoles('admin')); // Only Admin can view audit logs (Brief #2
 router.get('/', async (req: AuthRequest, res: Response) => {
   try {
     const { action, entity, search, limit = '100' } = req.query;
-    const filter: any = {};
+    const filter: any = { tenantId: req.user!.tenantId };
 
     if (action) filter.action = action;
     if (entity) filter.entity = entity;

@@ -3,7 +3,6 @@ import { AuthRequest } from '../types';
 import { getActorEmployee } from '../services/attendance.service';
 import { updateEmployee } from '../services/employee.service';
 import { getEmployeeDashboardData, getAdminDashboardData, getHRDashboardData } from '../services/dashboard.service';
-import { AppError } from '../utils/AppError';
 
 type Handler = (req: AuthRequest, res: Response) => Promise<{ status?: number; body?: object }>;
 
@@ -40,13 +39,12 @@ export const getDashboard = wrap(async (req) => {
   return { body: data };
 });
 
-export const getAdminDashboard = wrap(async () => {
-  const data = await getAdminDashboardData();
+export const getAdminDashboard = wrap(async (req) => {
+  const data = await getAdminDashboardData(req.user!);
   return { body: data };
 });
 
-export const getHRDashboard = wrap(async () => {
-  const data = await getHRDashboardData();
+export const getHRDashboard = wrap(async (req) => {
+  const data = await getHRDashboardData(req.user!);
   return { body: data };
 });
-

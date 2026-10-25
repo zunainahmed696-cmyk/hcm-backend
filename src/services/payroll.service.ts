@@ -1,8 +1,7 @@
-import Payslip, { IPayslipDocument } from '../models/Payslip';
+import Payslip from '../models/Payslip';
 import Employee from '../models/Employee';
 import Attendance from '../models/Attendance';
 import Leave from '../models/Leave';
-import { User } from '../models/User';
 import { Notification } from '../models/Notification';
 import { recordAudit } from './audit.service';
 import { AppError } from '../utils/AppError';
@@ -58,9 +57,12 @@ export interface EmployeePayrollItem {
 }
 
 /**
- * Calculate Monthly Payroll Draft for all active employees
+ * Calculate Monthly Payroll Draft for all active employees in the tenant
  */
-export const calculatePayrollRun = async (monthStr: string): Promise<{
+export const calculatePayrollRun = async (
+  monthStr: string,
+  actor: JWTPayload
+): Promise<{
   month: string;
   totalGross: number;
   totalNet: number;
@@ -72,11 +74,19 @@ export const calculatePayrollRun = async (monthStr: string): Promise<{
 }> => {
   const month = monthStr || new Date().toISOString().slice(0, 7);
 
-  // Check if this month is already locked in DB
-  const existingLocked = await Payslip.find({ month, status: 'locked' }).lean();
+  // Check if this month is already locked in DB for this tenant
+  const existingLocked = await Payslip.find({
+    tenantId: actor.tenantId,
+    month,
+    status: 'locked',
+  }).lean();
   const isLocked = existingLocked.length > 0;
 
-  const employees = await Employee.find({ status: { $ne: 'inactive' } }).lean();
+  const employees = await Employee.find({
+    tenantId: actor.tenantId,
+    status: { $ne: 'inactive' },
+    role: { $ne: 'admin' },
+  }).lean();
   const workingDays = 22; // Standard monthly working days
 
   const items: EmployeePayrollItem[] = [];
@@ -116,6 +126,7 @@ export const calculatePayrollRun = async (monthStr: string): Promise<{
 
     // Attendance records for the month
     const attendances = await Attendance.find({
+      tenantId: actor.tenantId,
       employeeId: emp.employeeId,
       date: new RegExp(`^${month}`),
     }).lean();
@@ -126,6 +137,7 @@ export const calculatePayrollRun = async (monthStr: string): Promise<{
 
     // Unpaid leaves
     const unpaidLeaves = await Leave.find({
+      tenantId: actor.tenantId,
       employeeId: emp.employeeId,
       status: 'approved',
       leaveType: 'Unpaid',
@@ -189,7 +201,7 @@ export const calculatePayrollRun = async (monthStr: string): Promise<{
 };
 
 /**
- * Finalize & Lock Monthly Payroll (Admin only per Brief Section 2 & #16)
+ * Finalize & Lock Monthly Payroll for the tenant (Admin only per Brief Section 2 & #16)
  */
 export const finalizePayrollRun = async (actor: JWTPayload, monthStr: string) => {
   if (actor.role !== 'admin') {
@@ -198,14 +210,22 @@ export const finalizePayrollRun = async (actor: JWTPayload, monthStr: string) =>
 
   const month = monthStr || new Date().toISOString().slice(0, 7);
 
-  // Check if already finalized
-  const existingLocked = await Payslip.findOne({ month, status: 'locked' });
+  // Check if already finalized for this tenant
+  const existingLocked = await Payslip.findOne({
+    tenantId: actor.tenantId,
+    month,
+    status: 'locked',
+  });
   if (existingLocked) {
     throw new AppError(`Payroll for ${month} has already been finalized and locked. Edits are prohibited.`, 400);
   }
 
-  const run = await calculatePayrollRun(month);
-  const employees = await Employee.find({ status: { $ne: 'inactive' } }).lean();
+  const run = await calculatePayrollRun(month, actor);
+  const employees = await Employee.find({
+    tenantId: actor.tenantId,
+    status: { $ne: 'inactive' },
+    role: { $ne: 'admin' },
+  }).lean();
   const empMap = new Map(employees.map((e) => [e.employeeId, e]));
 
   const createdPayslips = [];
@@ -214,10 +234,11 @@ export const finalizePayrollRun = async (actor: JWTPayload, monthStr: string) =>
     const emp = empMap.get(item.employeeId);
     if (!emp) continue;
 
-    // Upsert payslip record
+    // Upsert payslip record scoped to tenant
     const payslip = await Payslip.findOneAndUpdate(
-      { employeeId: item.employeeId, month },
+      { tenantId: actor.tenantId, employeeId: item.employeeId, month },
       {
+        tenantId: actor.tenantId,
         employeeId: item.employeeId,
         userId: emp.userId,
         month,
@@ -244,6 +265,7 @@ export const finalizePayrollRun = async (actor: JWTPayload, monthStr: string) =>
     if (emp.userId) {
       try {
         await Notification.create({
+          tenantId: actor.tenantId,
           type: 'notification',
           title: `Payslip Available: ${month}`,
           message: `Your salary payslip for ${month} has been finalized by Admin. Net pay: Rs. ${item.netSalary.toLocaleString()}. Download your slip under My Payslips.`,
@@ -289,13 +311,16 @@ export const finalizePayrollRun = async (actor: JWTPayload, monthStr: string) =>
  * Get own payslips for the authenticated employee
  */
 export const getMyPayslips = async (actor: JWTPayload) => {
-  const employee = await Employee.findOne({ userId: actor.userId });
+  const employee = await Employee.findOne({ userId: actor.userId, tenantId: actor.tenantId });
   if (!employee) return [];
 
   const payslips = await Payslip.find({
+    tenantId: actor.tenantId,
     employeeId: employee.employeeId,
     status: 'locked',
-  }).sort({ month: -1 }).lean();
+  })
+    .sort({ month: -1 })
+    .lean();
 
   return payslips.map((p) => ({
     ...p,

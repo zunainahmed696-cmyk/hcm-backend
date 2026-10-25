@@ -4,6 +4,7 @@ export type LeaveType = 'Annual' | 'Sick' | 'Casual' | 'Unpaid';
 export type LeaveStatus = 'pending' | 'approved' | 'rejected' | 'cancelled';
 
 export interface ILeaveDocument extends Document {
+  tenantId: mongoose.Types.ObjectId;
   employeeId: string;
   userId: mongoose.Types.ObjectId;
   leaveType: LeaveType;
@@ -22,6 +23,12 @@ export interface ILeaveDocument extends Document {
 
 const LeaveSchema = new Schema<ILeaveDocument>(
   {
+    tenantId: {
+      type: Schema.Types.ObjectId,
+      ref: 'Settings',
+      required: true,
+      index: true,
+    },
     employeeId: {
       type: String,
       required: true,
@@ -92,8 +99,8 @@ const LeaveSchema = new Schema<ILeaveDocument>(
   }
 );
 
-LeaveSchema.index({ employeeId: 1, status: 1 });
-LeaveSchema.index({ startDate: 1, endDate: 1 });
+LeaveSchema.index({ tenantId: 1, employeeId: 1, status: 1 });
+LeaveSchema.index({ tenantId: 1, startDate: 1, endDate: 1 });
 
 export const Leave = mongoose.model<ILeaveDocument>('Leave', LeaveSchema);
 export default Leave;

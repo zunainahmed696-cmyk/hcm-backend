@@ -1,6 +1,6 @@
 import mongoose, { Schema } from 'mongoose';
 
-// Singleton document: company profile + attendance/office rules (Module M2).
+// Tenant configuration document: company profile + attendance/office rules (Module M2).
 const SettingsSchema = new Schema(
   {
     companyName: { type: String, required: true, trim: true },
@@ -9,6 +9,7 @@ const SettingsSchema = new Schema(
     halfDayHours: { type: Number, default: 5 },
     weekend: { type: [Number], default: [0, 6] }, // 0 = Sunday ... 6 = Saturday
     office: {
+      address: { type: String, default: '' },
       lat: { type: Number, default: null },
       lng: { type: Number, default: null },
       radiusMeters: { type: Number, default: 150 },

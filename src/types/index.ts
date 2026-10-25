@@ -5,6 +5,7 @@ export type UserRole = (typeof ROLES)[number];
 
 export interface IUser {
   _id: string;
+  tenantId?: string;
   name: string;
   email: string;
   password?: string;
@@ -17,6 +18,7 @@ export interface IUser {
 
 export interface JWTPayload {
   userId: string;
+  tenantId: string;
   email: string;
   role: UserRole;
 }

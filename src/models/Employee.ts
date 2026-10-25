@@ -1,7 +1,8 @@
 import mongoose, { Schema, Document } from 'mongoose';
 
 export interface IEmployeeDocument extends Document {
-  employeeId: string; // Unique corporate code, e.g., EMP-001
+  tenantId: mongoose.Types.ObjectId;
+  employeeId: string; // Unique corporate code per tenant, e.g., EMP-001
   userId: mongoose.Types.ObjectId;
   name: string;
   fatherName: string;
@@ -20,16 +21,25 @@ export interface IEmployeeDocument extends Document {
     total: number;
   };
   status: 'active' | 'probation' | 'inactive';
+  shiftName?: string;
+  shiftStart?: string;
+  shiftEnd?: string;
+  shiftGraceMinutes?: number;
   createdAt: Date;
   updatedAt: Date;
 }
 
 const EmployeeSchema = new Schema<IEmployeeDocument>(
   {
+    tenantId: {
+      type: Schema.Types.ObjectId,
+      ref: 'Settings',
+      required: true,
+      index: true,
+    },
     employeeId: {
       type: String,
       required: [true, 'Unique Employee ID is required'],
-      unique: true,
       trim: true,
       uppercase: true,
     },
@@ -100,6 +110,27 @@ const EmployeeSchema = new Schema<IEmployeeDocument>(
       default: 'active',
       required: true,
     },
+    shiftName: {
+      type: String,
+      default: 'Morning Shift',
+      trim: true,
+    },
+    shiftStart: {
+      type: String,
+      default: '09:00',
+      trim: true,
+    },
+    shiftEnd: {
+      type: String,
+      default: '17:00',
+      trim: true,
+    },
+    shiftGraceMinutes: {
+      type: Number,
+      default: 15,
+      min: 0,
+      max: 120,
+    },
   },
   {
     timestamps: true,
@@ -107,6 +138,8 @@ const EmployeeSchema = new Schema<IEmployeeDocument>(
     toObject: { virtuals: true },
   }
 );
+
+EmployeeSchema.index({ tenantId: 1, employeeId: 1 }, { unique: true });
 
 // Virtual: Gross Salary = 1.5 * Basic Salary (40% HRA, 10% Medical allowance as per Hackathon M6 formula)
 EmployeeSchema.virtual('grossSalary').get(function (this: IEmployeeDocument) {

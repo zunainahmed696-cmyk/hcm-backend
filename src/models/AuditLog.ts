@@ -3,6 +3,7 @@ import mongoose, { Schema } from 'mongoose';
 // Append-only: there is intentionally no update/delete route for this collection.
 const AuditLogSchema = new Schema(
   {
+    tenantId: { type: Schema.Types.ObjectId, ref: 'Settings', index: true },
     actorId: { type: Schema.Types.ObjectId, ref: 'User', default: null },
     actorEmail: { type: String, default: 'system' },
     actorRole: { type: String, default: 'system' },

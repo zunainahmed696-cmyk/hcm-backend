@@ -39,18 +39,19 @@ export const smartParse = wrap(async (req) => {
 export const previewWorkingDays = wrap(async (req) => {
   const result = await leaveService.calculateWorkingDays(
     req.query.startDate as string,
-    req.query.endDate as string
+    req.query.endDate as string,
+    req.user!.tenantId
   );
   return { body: result };
 });
 
-export const listPending = wrap(async () => {
-  const pending = await leaveService.listPendingLeaves();
+export const listPending = wrap(async (req) => {
+  const pending = await leaveService.listPendingLeaves(req.user!);
   return { body: { pending } };
 });
 
-export const listAll = wrap(async () => {
-  const leaves = await leaveService.listAllLeaves();
+export const listAll = wrap(async (req) => {
+  const leaves = await leaveService.listAllLeaves(req.user!);
   return { body: { leaves } };
 });
 

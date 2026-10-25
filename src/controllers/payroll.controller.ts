@@ -18,7 +18,7 @@ const wrap = (fn: Handler) => async (req: AuthRequest, res: Response, next: Next
 
 export const getPayrollDraft = wrap(async (req) => {
   const month = req.query.month as string;
-  const result = await payrollService.calculatePayrollRun(month);
+  const result = await payrollService.calculatePayrollRun(month, req.user!);
   return { body: result };
 });
 

@@ -16,6 +16,11 @@ router.post('/catalog/:entity', authorizeRoles('admin'), c.createCatalogItem);
 router.put('/catalog/:entity/:id', authorizeRoles('admin'), c.updateCatalogItem);
 router.delete('/catalog/:entity/:id', authorizeRoles('admin'), c.deleteCatalogItem);
 
+// Shift Assignment: HR and Admin can view and assign shifts by department or employee
+router.get('/shifts', authorizeRoles('admin', 'hr'), c.getShifts);
+router.put('/shifts/department', authorizeRoles('admin', 'hr'), c.assignDeptShift);
+router.put('/shifts/employee/:id', authorizeRoles('admin', 'hr'), c.assignEmpShift);
+
 // Logins: Admin only
 router.get('/users', authorizeRoles('admin'), c.listUsers);
 router.post('/users/hr', authorizeRoles('admin'), c.createHr);
